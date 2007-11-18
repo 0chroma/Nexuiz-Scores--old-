@@ -35,19 +35,22 @@
 				$link = mysql_connect($db_host, $db_username, $db_password)
 				   or die('Could not connect: ' . mysql_error());
 				mysql_select_db($db_name) or die('Could not select database');
-				$feild = mysql_real_escape_string($feild);
-				//TODO: format value's datatype accordingly
-				$value = mysql_real_escape_string($value);
 				if(is_array($feild) && is_array($value))
 				{
 					$query = "SELECT * FROM ${tablename} WHERE ";
-					for($i=0; $i < count($field); $i++)
+					for($i=0; $i < count($feild); $i++)
 					{
-						$query .= $field[$i] . "=\"" . $value[$i] . "\"";
-						if($i != count($field)) { $i .= ", "; }
+						
+						$query .= mysql_real_escape_string($feild[$i]) . "=\"" . mysql_real_escape_string($value[$i]) . "\"";
+						if($i != count($feild)-1) { $query .= " AND "; }
 					}
 				}
-				else { $query = "SELECT * FROM ${tablename} WHERE ${feild}=\"${value}\""; }
+				else {
+					$feild = mysql_real_escape_string($feild);
+					//TODO: format value's datatype accordingly
+					$value = mysql_real_escape_string($value);
+					$query = "SELECT * FROM ${tablename} WHERE ${feild}=\"${value}\"";
+				}
 				$result = mysql_query($query) or die('Query failed: ' . mysql_error());
 				$list = Array();
 				while($line = mysql_fetch_array($result, MYSQL_ASSOC))
