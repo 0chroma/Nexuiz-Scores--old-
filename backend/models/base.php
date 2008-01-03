@@ -1,88 +1,189 @@
 <?php
 	if(!isset($Base))
 	{
+		// the Item class seems pointless, but it's really so that we don't have to
+		// have 5,000 database connections at once unless we need them
+		class Item {
+			var $_parentModel = null;
+			var $_parentInstance = false;
+			function __call($method, $arguments)
+			{
+				//map this to the parent model
+				$p = $this->_make_parent();
+				return call_user_func_array(array($p, $method), $arguments);
+			}
+			function _make_parent()
+			{
+				if(!$this->_parentInstance)
+				{
+					$parent = $this->_parentModel;
+					$this->_parentInstance = new $parent;
+				}
+				foreach($this as $prop => $val)
+				{
+					$this->_parentInstance->$prop = $val;
+				}
+				return $this->_parentInstance;
+			}
+			function save()
+			{
+				$p = $this->_make_parent();
+				$p->save();
+				if(!is_numeric($this->id)) {
+					$this->id = $p->_link->lastInsertID($p->_get_tablename());
+				}
+			}
+		}
+		
 		class Base
 		{
-			var $id;
+			var $id = array(
+				'type' => "int",
+				'length' => 11,
+				'auto_increment' => true,
+				'null' => false,
+				'primary_key' => true
+			);
+			var $_parentItem = null;
+			var $_result = false;
+			var $_link;
+			function __construct() {				
+				$p = new Item(func_get_args());
+				$p->_parentModel = get_class($this);
+				return $p;
+			}
+			
+			function _connect() {
+				if(!$this->_link) {
+					$this->_link = MDB2::factory($GLOBALS['db']['database']);
+					if(PEAR::isError($this->_link)){
+						internal_error("db_connect_err");
+					}
+				}
+			}
+			
+			function _query($sql, $values=array()) {
+				$this->_connect();
+			    $this->_result = array();
+			    if(sizeof($values) > 0) {
+			        $statement = $this->_link->prepare($sql, TRUE, MDB2_PREPARE_RESULT);
+			        $resultset = $statement->execute($values);
+			        $statement->free();
+			    }
+			    else {
+			        $resultset= $this->_link->query($sql);
+			    }
+			    if(PEAR::isError($resultset)) {
+			        internal_error("db_query_err");
+			    }
+			
+			    while($row = $resultset->fetchRow(MDB2_FETCHMODE_ASSOC)) {
+			        $this->_result[] = $row;
+			    }
+				return $this->_result;
+			}
+			
+			function __deconstruct()
+			{
+				if($this->_result) $this->_result->free();
+				$this->_link = null;
+			}
+			
+			function save()
+			{
+				$table = $this->_get_tablename();
+				if(is_numeric($this->id)) { $sql = "UPDATE ${table} SET "; }
+				else { $sql = "INSERT INTO ${table} SET "; }
+				$arr = array();
+				foreach($this as $key => $value)
+				{
+					if($key{0} != "_" && $key != "id")
+					{
+						if(is_int($value))
+						{
+							@array_push($arr, $this->_escape($key) . "=" . $value);
+						}
+						else
+						{
+							//when all else fails, make it a string
+							@array_push($arr, $this->_escape($key) . "=\"" . $this->_escape($value) ."\"");
+						}
+					}
+				}
+				$sql .= implode(', ',$arr);
+				$id = $this->id;
+				if(is_numeric($this->id)) { $sql .= " WHERE `ID`=${id} LIMIT 1"; }
+				$this->_query($sql);
+				if(!is_numeric($this->id)) {
+					$this->id = $this->_link->lastInsertID($this->_get_tablename());
+				}
+			}
+			
 			function get($id)
 			{
-				require("./../config.php");
 				$tablename = $this->_get_tablename();
-				$link = mysql_connect($db_host, $db_username, $db_password)
-				   or die('Could not connect: ' . mysql_error());
-				mysql_select_db($db_name) or die('Could not select database');
-				$query = "SELECT * FROM ${tablename} WHERE ID='${id}' LIMIT 1";
-				$result = mysql_query($query) or die('Query failed: ' . mysql_error());
-				$line = mysql_fetch_array($result, MYSQL_ASSOC);
-				if($line)
+                if(!is_numeric($id))
+                {
+                    $id = "'" . $this->_escape($id) . "'"; 
+                }
+				$this->_query("SELECT * FROM ${tablename} WHERE `ID`=${id} LIMIT 1");
+				if($this->_result[0])
 				{
-					$p = $this->_makeModel($line);
-					mysql_free_result($result);
-					mysql_close($link);
+					$p = $this->_makeModel($this->_result[0]);
 					return $p;
 				}
 				else
 				{
-					mysql_free_result($result);
-					mysql_close($link);
 					return false;
 				}
 			}
-			function filter($feild, $value)
+			function _escape($str)
 			{
-				require("./../config.php");
+				$this->_connect();
+				return $this->_link->escape($str);
+			}
+			function filter($feild, $value=false)
+			{
 				$tablename = $this->_get_tablename();
-				$link = mysql_connect($db_host, $db_username, $db_password)
-				   or die('Could not connect: ' . mysql_error());
-				mysql_select_db($db_name) or die('Could not select database');
-				if(is_array($feild) && is_array($value))
+				if(is_array($feild))
 				{
 					$query = "SELECT * FROM ${tablename} WHERE ";
-					for($i=0; $i < count($feild); $i++)
+					$list = array();
+					foreach($field as $key => $value)
 					{
-						
-						$query .= mysql_real_escape_string($feild[$i]) . "=\"" . mysql_real_escape_string($value[$i]) . "\"";
-						if($i != count($feild)-1) { $query .= " AND "; }
+						array_push($list, $this->_escape($feild[$i]) . "=\"" . $this->_escape($value[$i]) . "\"");
 					}
+					$query .= implode(" AND ", $list);
 				}
 				else {
-					$feild = mysql_real_escape_string($feild);
+					$feild = $this->_escape($feild);
 					//TODO: format value's datatype accordingly
-					$value = mysql_real_escape_string($value);
+					$value = $this->_escape($value);
 					$query = "SELECT * FROM ${tablename} WHERE ${feild}=\"${value}\"";
 				}
-				$result = mysql_query($query) or die('Query failed: ' . mysql_error());
+				$this->_query($query); 
 				$list = Array();
-				while($line = mysql_fetch_array($result, MYSQL_ASSOC))
+				foreach($this->_result as $line)
 				{
 					array_push($list, $this->_makeModel($line));
 					$results = TRUE;
 				}
-				mysql_free_result($result);
-				mysql_close($link);
 				if(!isset($results)) { return false; }
 				else { return $list; }
 			}
-			function save()
+			function all()
 			{
-				require("./../config.php");
-				$link = mysql_connect($db_host, $db_username, $db_password)
-				   or die('Could not connect: ' . mysql_error());
-				mysql_select_db($db_name) or die('Could not select database');
-				if(isset($this->id))
+				$tablename = $this->_get_tablename();
+				$this->_query("SELECT * FROM ${tablename}");
+				$list = Array();
+				foreach($this->_result as $line)
 				{
-					mysql_query($this->_make_mysql_query($this->_get_tablename(), "update")) or die('Query failed: ' . mysql_error());
+					array_push($list, $this->_makeModel($line));
 				}
-				else
-				{
-					mysql_query($this->_make_mysql_query($this->_get_tablename(), "insert")) or die('Query failed: ' . mysql_error());
-				}
-				if(!isset($this->id)) { $this->id = mysql_insert_id(); }
-				mysql_close($link);
+				return $list;
 			}		
 			function _get_tablename()
 			{
-				require("./../config.php");
 				if(isset($this->_tablename))
 				{
 					$tablename=$this->_tablename;
@@ -91,75 +192,82 @@
 				{
 					$tablename=strtolower(get_class($this));
 				}
+				$db_prefix = $GLOBALS['db']['prefix'];
 				return $db_prefix . $tablename;
 			}
 			function _makeModel($line)
 			{
-				$p = new $this;
+				$p = new Item;
+				//mixin current values if we're not a table definition
+				if(!is_array($this->id))
+				{
+					foreach ($this as $key => $value)
+					{
+						$p->$key = $value;
+					}
+				}
+				//then add items provided to us
 				foreach ($line as $key => $value)
 				{
 					$p->$key = $value;
 				}
-				if(isset($line['ID']))
+				if(isset($p->ID))
 				{
 					$p->id = $line['ID'];
 					unset($p->ID);
 				}
+				$p->_parentModel = get_class($this);
 				return $p;
 			}
-			function _make_mysql_query($table, $type)
-			{
-				$i = 0;
-				//for some reason count($this) returns 0 so...
-				$length = $this->count()-1;
-				if($type == "update") { $sql = "UPDATE ${table} SET "; }
-				else { $sql = "INSERT INTO ${table} SET "; }
-				foreach($this as $key => $value)
-				{
-					if($key != "_tablename")
-					{
-						if($key == "id")
-						{
-							$key = "ID";
-						}
-						if(is_int($value))
-						{
-							$sql .= mysql_real_escape_string($key) . "=" . $value;
-						}
-						else
-						{
-							//when all else fails, make it a string
-							$sql .= mysql_real_escape_string($key) . "=\"" . mysql_real_escape_string($value) ."\"";
-						}
-						if($i != $length)
-						{
-							$sql .= ", ";
-						}
-						else
-						{
-							$sql .= " ";
-						}
-					}
-					$i++;
-				}
-				$id=$this->id;
-				if($type == "update") { $sql .= " WHERE ID=${id} LIMIT 1"; }
-				return $sql;
+			function truncate() {
+				$table = $this->_get_tablename();
+				$this->_query("TRUNCATE TABLE `${table}`");
+				$this->_query("ALTER TABLE `${table}` AUTO_INCREMENT = 1");
 			}
-			function count()
+			function make_json($columns=false)
 			{
-				//for some reason count($this) returns 0 so...
-				$length = 0;
+				$list = array();
+				$filter = is_array($columns);
 				foreach($this as $key => $value)
 				{
-					if($key != "_tablename")
+					if($key{0} != "_")
 					{
-						$length++;
+						$continue = true;
+						if($filter)
+						{
+							if(array_search($key, $columns)===false) $continue = false;
+						}
+						if($continue)
+						{
+							$list[$key] = $value;
+						}
 					}
 				}
-				return $length;
+				return json_encode($list);
+			}
+			function delete()
+			{
+				if(isset($this->id))
+				{
+					$this->_query("DELETE FROM " . $this->_get_tablename() . " WHERE ID=" . $this->id . " LIMIT 1");
+				}
+			}
+			function _create_table()
+			{
+				$this->_query("DROP TABLE IF EXISTS `" . $this->_get_tablename() . "`");
+				$query = "CREATE TABLE `" . $this->_get_tablename() . "` (";
+				$list = array();
+				foreach($this as $key => $v)
+				{
+					if($key{0} != "_" && is_array($v)) {
+						$list[] = "`" . $key . "` " . ($v['type'] ? $v['type'] : " int") . ($v['length'] ? "(" . $v['length'] . ")" : "") . ($v['auto_increment'] ? " auto_increment" : "") . ($v['primary_key'] ? " PRIMARY KEY" : "");
+					}
+				}
+				$query .= implode(", ", $list);
+				$query .= ") TYPE=MyISAM CHARACTER SET `utf8` COLLATE `utf8_general_ci` AUTO_INCREMENT=1";
+				$this->_query($query);
 			}
 		}
-		$Base = new Base();
+		$Base = Base;
 	}
 ?>
