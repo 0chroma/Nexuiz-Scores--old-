@@ -12,6 +12,17 @@
 				$p = $this->_make_parent();
 				return call_user_func_array(array($p, $method), $arguments);
 			}
+			function __get($var) {
+				$parent = new $this->_parentModel;
+				$type = $parent->$var['type'];
+				if($type == "foreignkey") {
+					$p = $this->_make_parent();
+					return $p->get($this->$var);
+				}
+				else {
+					return $this->$var;
+				}
+			}
 			function _make_parent()
 			{
 				if(!$this->_parentInstance)
@@ -38,7 +49,7 @@
 		class Base
 		{
 			var $id = array(
-				'type' => "int",
+				'dbtype' => "int",
 				'length' => 11,
 				'auto_increment' => true,
 				'null' => false,
@@ -47,6 +58,7 @@
 			var $_parentItem = null;
 			var $_result = false;
 			var $_link;
+			var $_modified = false;
 			function __construct() {				
 				$p = new Item(func_get_args());
 				$p->_parentModel = get_class($this);
@@ -89,19 +101,65 @@
 				$this->_link = null;
 			}
 			
+			function __set($var, $value) {
+				if($this->_modified == false) $this->_modified = true;
+				$this->$var = $value;
+			}
+			
+			function __get($var) {
+				if($this->_modified == true)
+				{
+					$me = get_class($this);
+					$parent = new $me;
+					$type = $parent->$var['type'];
+					if($type == "foreignkey") {
+						$class = $parent->$var['model'];
+						$class = new $class();
+						return $class->get($this->$var);
+					}
+					elseif(isset($this->$var)) {
+						return $this->$var;
+					}
+				}
+				else {
+					return $this->$var;
+				}
+			}
+			
 			function save()
 			{
 				$table = $this->_get_tablename();
 				if(is_numeric($this->id)) { $sql = "UPDATE ${table} SET "; }
 				else { $sql = "INSERT INTO ${table} SET "; }
 				$arr = array();
+				$me = get_class($this);
+				$parent = new $me;
 				foreach($this as $key => $value)
 				{
-					if($key{0} != "_" && $key != "id")
+					if($key{0} != "_" && $key != "id" && isset($parent->$key))
 					{
-						if(is_int($value))
+						$info = $parent->$key;
+						if(!isset($info['type'])) {
+							if(stristr($info['dbtype'], "text") !== false) {
+								$info['type'] = "string";
+							}
+							if(stristr($info['dbtype'], "int") !== false) {
+								$info['type'] = "integer";
+							}
+						}
+						else {
+							if($info['type'] == "array") {
+								$value = json_encode($value);
+							}
+							
+							if($info['type'] == "foreignkey") {
+								$value = ($value->id ? $value->id : null);
+							}
+						}
+						
+						if(is_int($value) || is_null($value))
 						{
-							@array_push($arr, $this->_escape($key) . "=" . $value);
+							@array_push($arr, $this->_escape($key) . "=" . (is_null($value) ? "null" : $value));
 						}
 						else
 						{
@@ -198,25 +256,16 @@
 			function _makeModel($line)
 			{
 				$p = new Item;
-				//mixin current values if we're not a table definition
-				if(!is_array($this->id))
-				{
-					foreach ($this as $key => $value)
-					{
-						$p->$key = $value;
-					}
-				}
-				//then add items provided to us
+				$me = get_class($this);
+				$parent = new $me();
 				foreach ($line as $key => $value)
 				{
+					if($parent->$key['type'] == "array") {
+						$value = json_decode($value);
+					}
 					$p->$key = $value;
 				}
-				if(isset($p->ID))
-				{
-					$p->id = $line['ID'];
-					unset($p->ID);
-				}
-				$p->_parentModel = get_class($this);
+				$p->_parentModel = $me;
 				return $p;
 			}
 			function truncate() {
@@ -260,7 +309,7 @@
 				foreach($this as $key => $v)
 				{
 					if($key{0} != "_" && is_array($v)) {
-						$list[] = "`" . $key . "` " . ($v['type'] ? $v['type'] : " int") . ($v['length'] ? "(" . $v['length'] . ")" : "") . ($v['auto_increment'] ? " auto_increment" : "") . ($v['primary_key'] ? " PRIMARY KEY" : "");
+						$list[] = "`" . $key . "` " . ($v['dbtype'] ? $v['dbtype'] : "int") . ($v['length'] ? "(" . $v['length'] . ")" : "") . ($v['auto_increment'] ? " auto_increment" : "") . ($v['primary_key'] ? " PRIMARY KEY" : "");
 					}
 				}
 				$query .= implode(", ", $list);
